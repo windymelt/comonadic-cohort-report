@@ -112,11 +112,11 @@ val detect = (s: Vec) =>
 // getStartExitMoment0も改良を加えよう。
 // 後からdetectを修正できるように、detectを引数として受け取るようにする。
 // そして、最終的に足し算ができれば何を返してもよいので、Count(Int)のかわりにF : Monoidとして型を制約する。
+
 def getDesiredMoment[F: Monoid](
     detector: Vec => Vec => F
 )(xs: ByMonth[Action]): Option[Seq[F]] = {
-  val maybeNel = NonEmptyList.fromList(xs)
-  maybeNel map { ys: NonEmptyList[Action] =>
+  NonEmptyList.fromList(xs) map { ys: NonEmptyList[Action] =>
     val nested = ys coflatMap { (zs: NonEmptyList[Action]) =>
       (Some(zs.head), zs.get(1)) mapN { (fst, snd) =>
         detector(fst.vec)(snd.vec)
@@ -199,11 +199,10 @@ interExtrapolateMonth(inToByMonth(testInB))(from, until)
 
 // ところで、補完を行うと ByMonth[Option[Action]] になってしまうので、 getDesiredMoment に渡せない。
 // getDesiredMoment が ByMonth[Option] を受け取れるようにする。
-def getDesiredMomentOpt[F: Monoid](
+def getDesiredMomentOpt0[F: Monoid](
     detector: Vec => Vec => F
 )(xs: ByMonth[Option[Action]]): Option[Seq[F]] = {
-  val maybeNel = NonEmptyList.fromList(xs)
-  maybeNel map { ys: NonEmptyList[Option[Action]] =>
+  NonEmptyList.fromList(xs) map { ys: NonEmptyList[Option[Action]] =>
     val nested = ys coflatMap { (zs: NonEmptyList[Option[Action]]) =>
       (Some(zs.head), zs.get(1)) mapN { (fst, snd) =>
         // FがMonoidであるおかげで、Noneが渡ってきたときに何を返せばよいかは自明に定まる。
@@ -214,26 +213,54 @@ def getDesiredMomentOpt[F: Monoid](
   }
 }
 
-// getDesiredMomentOpt が望み通りのふるまいをするか確認しよう。
-getDesiredMomentOpt(detect)(
+// getDesiredMomentOpt0 が望み通りのふるまいをするか確認しよう。
+getDesiredMomentOpt0(detect)(
   interExtrapolateMonth(inToByMonth(testInB))(from, until)
 )
 // 何も操作のない時期はきちんと0を返せている。
 
 // ユーザごとに計算できるか確認してみよう。
-val cohortPerUser0 = testIn groupBy (_.user) map { case (k, v) =>
-  k -> getDesiredMomentOpt(detect)(
-    interExtrapolateMonth(inToByMonth(v))(from, until)
-  )
-}
-// ユーザ単位で特定の操作を行った月を出力できている。
 
-// あとは、ユーザごとの結果を結合するだけだ。getDesiredMomentOpt が Option[Seq[F : Monoid]] を返すおかげで、 combineAll を呼べば勝手に結果が結合される。
-// ただし、一度transposeで転置しなければならないのが面倒だが。
-val cohort0 = cohortPerUser0.values.toList.flatten.transpose
-  .traverse(xs => List(xs.combineAll))
-  .flatten
-// お見事。
+// ここでヘルパーとなるモノイドのインスタンスを定義する。
+// モノイドのリストが2つあるとき、それぞれの要素をcombineすることでList[F : Monoid]をモノイドにできる:
+def ListMonoidIsMonoid[F: Monoid]: Monoid[List[F]] =
+  Monoid.instance(
+    List.empty[F],
+    { case (x, y) =>
+      x.zipAll(y, Monoid[F].empty, Monoid[F].empty).map { case (xx, yy) =>
+        xx |+| yy
+      }
+    }
+  )
+
+// ユーザでいちど分割した状態遷移をもとに何らかの計算を行い、また結合するためのヘルパー関数を書こう:
+def splitAndCombine[A, K, F: Monoid](in: List[A])(by: A => K)(
+    f: List[A] => List[F]
+) =
+  in.groupBy(by).values.map(f).toList.combineAll(ListMonoidIsMonoid[F])
+
+// 分割して結合しない場合はこのような感じになる:
+def calcCohortPerUser0[F: Monoid](in: In)(
+    detector: Vec => Vec => F
+)(from: DateTime, until: DateTime) =
+  in groupBy (_.user) map { case (k, v) =>
+    k -> getDesiredMomentOpt0(detector)(
+      interExtrapolateMonth(inToByMonth(v))(from, until)
+    )
+  }
+def calcCohortPerUser[F: Monoid](in: In)(
+    detector: Vec => Vec => F
+)(from: DateTime, until: DateTime) = splitAndCombine(in.toList)(_.user) { as =>
+  getDesiredMomentOpt0(detector)(
+    interExtrapolateMonth(inToByMonth(as))(from, until)
+  ).orEmpty.toList
+}
+
+// ユーザ単位で特定の操作を行った月を出力できている。
+val cohortPerUser0 = calcCohortPerUser0(testIn)(detect)(from, until)
+
+// 結合するバージョンも正しく動いている。
+val cohortPerUser02 = calcCohortPerUser(testIn)(detect)(from, until)
 
 // 複数のユーザの単一の状態遷移についての、さらに月内の振舞いを単純化した状態のコホートを生成することができた。
 // 今度は、複数の状態遷移を扱えるようにして一覧できるようにしよう。
@@ -242,18 +269,18 @@ type TransitionCount = (Vec, Vec) ~> Count
 val detectMulti: Vec => Vec => TransitionCount = (s: Vec) =>
   (x: Vec) => Map[(Vec, Vec), Count](((s, x), 1))
 
-// ちなみにTransitionCountはMonoidになる:
+// ちなみにTransitionCountは自動的にMonoidになる:
 val tc = Map(((Start(Premium), Exit), 1))
 tc |+| tc |+| tc
 
-// detectMultiをgetStartExitMomentOptに渡してみよう:
-getDesiredMomentOpt(detectMulti)(
+// detectMultiをgetStartExitMomentOpt0に渡してみよう:
+getDesiredMomentOpt0(detectMulti)(
   interExtrapolateMonth(inToByMonth(testInB))(from, until)
 )
 // TransitionCount が Monoidであるおかげで、他のどこにも手を加えることなく勝手に動いた。すげ〜
 
 // さて、補完の影響で同じ状態間の遷移も記録されてしまってレポートの邪魔だ。同じ状態遷移は禁止する。
-val detectMultiWithNoSameVec: Vec => Vec => TransitionCount = (s: Vec) =>
+val detectMultiWithNoSameVec0: Vec => Vec => TransitionCount = (s: Vec) =>
   (x: Vec) =>
     (s, x) match {
       case (s, x) if s == x => Map.empty // Exclude same transition
@@ -261,23 +288,19 @@ val detectMultiWithNoSameVec: Vec => Vec => TransitionCount = (s: Vec) =>
     }
 
 // これですっきりした。
-getDesiredMomentOpt(detectMultiWithNoSameVec)(
+getDesiredMomentOpt0(detectMultiWithNoSameVec0)(
   interExtrapolateMonth(inToByMonth(testInB))(from, until)
 )
 // 同じ状態間の遷移は見えなくなった。
 
 // さっそくtestInで試してみよう:
-val multipleCohortPerUser = testIn groupBy (_.user) map { case (k, v) =>
-  k -> getDesiredMomentOpt(detectMultiWithNoSameVec)(
-    interExtrapolateMonth(inToByMonth(v))(from, until)
-  )
-}
+val multipleCohortPerUser =
+  calcCohortPerUser0(testIn)(detectMultiWithNoSameVec0)(from, until)
+
 // 個々のユーザの状態遷移が記録された。
 
-// あとはいつもどおりvaluesしてtoListしてflattenしてtransposeしてtraverseしてflattenしよう。
-multipleCohortPerUser.values.toList.flatten.transpose
-  .traverse(xs => List(xs.combineAll))
-  .flatten
+// あとは前と同じようにcalcCohortPerUserを使ってみよう。
+calcCohortPerUser(testIn)(detectMultiWithNoSameVec0)(from, until)
 // なんてこった!! 複数のユーザの状態遷移を集計できてしまった。
 
 // 複数のユーザの複数の状態遷移をまとめることができた。
@@ -294,9 +317,9 @@ multipleCohortPerUser.values.toList.flatten.transpose
 type TransitionCountWithTiming = (Vec, Vec) ~> ((DateTime, DateTime) ~> Count)
 val AssumeTCWTIsMonoid = implicitly[Monoid[TransitionCountWithTiming]]
 // コンパイルが通るので、やっぱりモノイドだ。
-// でもdetectMultiWithNoSameVecのTransitionCountWithTiming版、作れるかなあ・・・
+// でもdetectMultiWithNoSameVec0のTransitionCountWithTiming版、作れるかなあ・・・
 // occurredAtの情報が欲しいから、VecではなくActionが必要だ。
-val detectMultiWithNoSameVec2: Action => Action => TransitionCountWithTiming =
+val detectMultiWithNoSameVec: Action => Action => TransitionCountWithTiming =
   (s: Action) =>
     (x: Action) =>
       (s, x) match {
@@ -313,8 +336,8 @@ val detectMultiWithNoSameVec2: Action => Action => TransitionCountWithTiming =
       }
 // 気絶しそうだ。
 
-// getDesiredMomentOptはVecを渡してくるので、Actionを渡すように修正する:
-def getDesiredMomentOpt2[F: Monoid](
+// getDesiredMomentOpt0はVecを渡してくるので、Actionを渡すように修正する:
+def getDesiredMomentOpt[F : Monoid](
     detector: Action => Action => F
 )(xs: ByMonth[Option[Action]]): Option[Seq[F]] = {
   val maybeNel = NonEmptyList.fromList(xs)
@@ -328,15 +351,17 @@ def getDesiredMomentOpt2[F: Monoid](
   }
 }
 
-// とりあえず動くか確かめてみよう:
-val cohortWithTiming = testIn groupBy (_.user) map { case (k, v) =>
-  k -> getDesiredMomentOpt2(detectMultiWithNoSameVec2)(
-    interExtrapolateMonth(inToByMonth(v))(from, until)
-  )
+// calcCohortPerUserがgetDesiredMomentOptを使うようにしよう:
+def calcCohortPerUser2[F : Monoid](in: In)(
+    detector: Action => Action => F
+)(from: DateTime, until: DateTime) = splitAndCombine(in.toList)(_.user) { as =>
+  getDesiredMomentOpt(detector)(
+    interExtrapolateMonth(inToByMonth(as))(from, until)
+  ).orEmpty.toList
 }
-val combinedCohortWithTiming = cohortWithTiming.values.toList.flatten.transpose
-  .traverse(xs => List(xs.combineAll))
-  .flatten
+
+// とりあえず動くか確かめてみよう:
+val combinedCohortWithTiming = calcCohortPerUser2[TransitionCountWithTiming](testIn)(detectMultiWithNoSameVec)(from, until)
 
 // うまく動いてそうだ。この構造の利点は、TransitionCountへと潰せることだ:
 val shrinkToTransitionCount =
@@ -344,12 +369,18 @@ val shrinkToTransitionCount =
     k -> v.values.toList.combineAll
   })
 
+// おそらく、コホートレポートの出力に必要な情報はあらかた揃ったはずだ。
 // TransitionCountWithTiming を pretty printする関数を考えてみよう。
 // 典型的には、ある状態から別の状態への遷移に注目して、時系列でどのように変化するかをprintする。
 val filteredCohortWithTiming = combinedCohortWithTiming.map(_.collect {
   case ((Change(Premium), Exit), v) => v
 })
-// 0ヶ月、1ヶ月、2ヶ月と差分をもとに表示したいので、さらに変形する:
+// 0ヶ月、1ヶ月、2ヶ月と差分をもとに表示したいので、さらに変形する。
+def transformCohortForPrint(cohort: TransitionCountWithTiming)(desiredPair: (Vec, Vec)) = {
+  cohort.get(desiredPair).map { case ((k, v)) =>
+    val from = k.
+  }
+}
 val filteredCohortWithTimingDiff =
   filteredCohortWithTiming.flatten.combineAll.map { case (((f, u), v)) =>
     f.to(u).toPeriod().getMonths() -> (f -> v) // FIX: つぶしすぎている
