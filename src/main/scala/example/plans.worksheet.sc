@@ -337,7 +337,7 @@ val detectMultiWithNoSameVec: Action => Action => TransitionCountWithTiming =
 // 気絶しそうだ。
 
 // getDesiredMomentOpt0はVecを渡してくるので、Actionを渡すように修正する:
-def getDesiredMomentOpt[F : Monoid](
+def getDesiredMomentOpt[F: Monoid](
     detector: Action => Action => F
 )(xs: ByMonth[Option[Action]]): Option[Seq[F]] = {
   val maybeNel = NonEmptyList.fromList(xs)
@@ -352,7 +352,7 @@ def getDesiredMomentOpt[F : Monoid](
 }
 
 // calcCohortPerUserがgetDesiredMomentOptを使うようにしよう:
-def calcCohortPerUser2[F : Monoid](in: In)(
+def calcCohortPerUser2[F: Monoid](in: In)(
     detector: Action => Action => F
 )(from: DateTime, until: DateTime) = splitAndCombine(in.toList)(_.user) { as =>
   getDesiredMomentOpt(detector)(
@@ -361,7 +361,9 @@ def calcCohortPerUser2[F : Monoid](in: In)(
 }
 
 // とりあえず動くか確かめてみよう:
-val combinedCohortWithTiming = calcCohortPerUser2[TransitionCountWithTiming](testIn)(detectMultiWithNoSameVec)(from, until)
+val combinedCohortWithTiming = calcCohortPerUser2[TransitionCountWithTiming](
+  testIn
+)(detectMultiWithNoSameVec)(from, until)
 
 // うまく動いてそうだ。この構造の利点は、TransitionCountへと潰せることだ:
 val shrinkToTransitionCount =
@@ -376,15 +378,27 @@ val filteredCohortWithTiming = combinedCohortWithTiming.map(_.collect {
   case ((Change(Premium), Exit), v) => v
 })
 // 0ヶ月、1ヶ月、2ヶ月と差分をもとに表示したいので、さらに変形する。
-def transformCohortForPrint(cohort: TransitionCountWithTiming)(desiredPair: (Vec, Vec)) = {
-  cohort.get(desiredPair).map { case ((k, v)) =>
-    val from = k.
+def transformCohortForPrint(
+    cohort: TransitionCountWithTiming
+)(desiredPair: (Vec, Vec)) = {
+  cohort.get(desiredPair).map { m =>
+    m map { case ((s, t), v) =>
+      s.to(t).toPeriod.getMonths() -> Map((s, v))
+    }
   }
 }
+
+transformCohortForPrint(combinedCohortWithTiming.combineAll)(
+  (Change(Premium), Exit)
+)
+
 val filteredCohortWithTimingDiff =
   filteredCohortWithTiming.flatten.combineAll.map { case (((f, u), v)) =>
     f.to(u).toPeriod().getMonths() -> (f -> v) // FIX: つぶしすぎている
   }
+
+val fromToUntilMonthsRange = from.to(until).toDuration().getStandardDays()
+
 (0 to 12) foreach { diff =>
   filteredCohortWithTimingDiff.get(diff)
 }
