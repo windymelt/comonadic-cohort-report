@@ -392,6 +392,10 @@ transformCohortForPrint(combinedCohortWithTiming.combineAll)(
   (Change(Premium), Exit)
 )
 
+// そんで、1行は経過した月数に相当するので、最大 until - from の月数にあたるはず。
+// 色々あって月数を数えられないので、30日で割って四捨五入したらだいたいいいでしょということにする。
+val durationMonth = Math.round((from to until).toDuration().getStandardDays() / 30.0)
+
 val filteredCohortWithTimingDiff =
   filteredCohortWithTiming.flatten.combineAll.map { case (((f, u), v)) =>
     f.to(u).toPeriod().getMonths() -> (f -> v) // FIX: つぶしすぎている
