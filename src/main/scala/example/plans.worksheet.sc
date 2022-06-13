@@ -388,22 +388,41 @@ def transformCohortForPrint(
   }
 }
 
-transformCohortForPrint(combinedCohortWithTiming.combineAll)(
+// Premiumへの変更から、やめるまでのコホートを出力してみよう:
+val cohortForPremiumToExit = transformCohortForPrint(combinedCohortWithTiming.combineAll)(
   (Change(Premium), Exit)
 )
 
-// そんで、1行は経過した月数に相当するので、最大 until - from の月数にあたるはず。
-// 色々あって月数を数えられないので、30日で割って四捨五入したらだいたいいいでしょということにする。
-val durationMonth = Math.round((from to until).toDuration().getStandardDays() / 30.0)
+type CohortPerTransition = Map[Int, Map[DateTime, Count]]
 
-val filteredCohortWithTimingDiff =
-  filteredCohortWithTiming.flatten.combineAll.map { case (((f, u), v)) =>
-    f.to(u).toPeriod().getMonths() -> (f -> v) // FIX: つぶしすぎている
-  }
+def showCohort(cohort: CohortPerTransition, from: DateTime, until: DateTime): String = {
+  // そんで、1行は経過した月数に相当するので、最大 until - from の月数にあたるはず。
+  // 色々あって月数を数えられないので、30日で割って四捨五入したらだいたいいいでしょということにする。
+  val durationMonth =
+    Math.round((from to until).toDuration().getStandardDays() / 30.0)
 
-val fromToUntilMonthsRange = from.to(until).toDuration().getStandardDays()
+  val fromToUntilMonthsRange =
+    from.to(until).toDuration().getStandardDays() / 30
 
-(0 to 12) foreach { diff =>
-  filteredCohortWithTimingDiff.get(diff)
+  val header = (0 to fromToUntilMonthsRange.toInt) map { diff =>
+    from.plusMonths(diff).toString("yyyy-MM")
+  } prepended ("diff") mkString ("\t")
+
+  val body = (0 to fromToUntilMonthsRange.toInt) map { diff =>
+    // diffはnヶ月目にあたる情報。
+    // diffヶ月目の情報を取り出す。なければ空にする
+    val cohortForThisDiff = cohort.get(diff).getOrElse(Map())
+    // diffヶ月目の情報を、月別に取り出して表示する
+    val lis = (0 to fromToUntilMonthsRange.toInt) map { diff2 =>
+      val mo = from.plusMonths(diff2)
+      cohortForThisDiff.get(mo).orEmpty
+    }
+    lis.prepended(s"${diff}ヶ月目").mkString("\t")
+  } mkString ("\n")
+
+  header + "\n" + body + "\n"
 }
-// WIP
+
+val printableCohort = showCohort(cohortForPremiumToExit.get, from, until)
+
+print(printableCohort)
