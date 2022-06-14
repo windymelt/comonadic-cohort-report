@@ -64,7 +64,7 @@ object Util {
     interpolateMonth -> extrapolateMonth mapN (_ >>> _)
 
   import Action.actionOrdering
-  val inToByMonth: List[Action] => ByMonth[Action] = (in: List[Action]) =>
+  val aggregateActionsPerMonth: List[Action] => ByMonth[Action] = (in: List[Action]) =>
     in
       .groupBy(a => (a.occurredAt.year, a.occurredAt.month))
       .map { case (k, v) => k -> v.sorted.last } // 月の最後のActionを代表値とみなす

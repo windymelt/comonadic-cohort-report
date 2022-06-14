@@ -42,7 +42,7 @@ object Cohort {
   )(from: DateTime, until: DateTime) = Util.splitAndCombine(in.toList)(_.user) {
     as =>
       getDesiredMomentOpt(detector)(
-        Util.interExtrapolateMonth(from, until)(Util.inToByMonth(as))
+        Util.interExtrapolateMonth(from, until)(Util.aggregateActionsPerMonth(as))
       ).orEmpty.toList
   }
 
