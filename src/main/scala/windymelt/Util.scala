@@ -22,18 +22,19 @@ object Util {
     in.groupBy(by).values.map(f).toList.combineAll(ListMonoidIsMonoid[F])
 
   private type DatePair = (DateTime, DateTime)
-  private val interpolateMonth: List[Action] => DatePair => ByMonth[Action] =
-    (xs: ByMonth[Action]) => { case (from: DateTime, until: DateTime) =>
-      // 第一段階: xsのうち最大と最小のoccurred_atの間が内挿される
-      val zs: List[ByMonth[Action]] = xs coflatMap { ys =>
-        val diffMonthsF = (x: Action, y: Action) =>
-          x.occurredAt.to(y.occurredAt).toPeriod().getMonths() - 1
-        val diffMonths = (ys.get(0), ys.get(1)) mapN diffMonthsF getOrElse (0)
-        List(ys(0)) ++ Iterator.continually(ys(0)).take(diffMonths).toList
-      }
-      // List[List[Action]] になっているので、つぶす
-      zs.flatten
-    }
+  private val interpolateMonth: DatePair => List[Action] => ByMonth[Action] = {
+    case (from: DateTime, until: DateTime) =>
+      (xs: ByMonth[Action]) =>
+        // 第一段階: xsのうち最大と最小のoccurred_atの間が内挿される
+        val zs: List[ByMonth[Action]] = xs coflatMap { ys =>
+          val diffMonthsF = (x: Action, y: Action) =>
+            x.occurredAt.to(y.occurredAt).toPeriod().getMonths() - 1
+          val diffMonths = (ys.get(0), ys.get(1)) mapN diffMonthsF getOrElse (0)
+          List(ys(0)) ++ Iterator.continually(ys(0)).take(diffMonths).toList
+        }
+        // List[List[Action]] になっているので、つぶす
+        zs.flatten
+  }
 
   private val extrapolateMonth
       : DatePair => ByMonth[Action] => ByMonth[Option[Action]] = {
@@ -60,7 +61,7 @@ object Util {
   }
 
   val interExtrapolateMonth =
-    extrapolateMonth <*> interpolateMonth(_: List[Action])
+    interpolateMonth -> extrapolateMonth mapN (_ >>> _)
 
   import Action.actionOrdering
   val inToByMonth: List[Action] => ByMonth[Action] = (in: List[Action]) =>
